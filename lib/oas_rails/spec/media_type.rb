@@ -41,6 +41,20 @@ module OasRails
           end
         end
 
+        # Converts a list of tags to a hash of examples.
+        #
+        # @param tags [Array<RequestBodyExampleTag>] the list of request body example tags.
+        # @return [Hash] a hash containing the examples data.
+        def tags_to_examples(tags:)
+          tags.each_with_object({}) do |tag, result|
+            key = tag.text.downcase.gsub(' ', '_')
+            result[key] = {
+              "summary" => tag.text,
+              "value" => tag.content
+            }
+          end
+        end
+
         private
 
         # Fetches examples from FactoryBot for the provided class.

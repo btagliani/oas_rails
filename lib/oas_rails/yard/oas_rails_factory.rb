@@ -15,8 +15,15 @@ module OasRails
       # @param text [String] The tag text to parse.
       # @return [RequestBodyExampleTag] The parsed request body example tag object.
       def parse_tag_with_request_body_example(tag_name, text)
-        description, _, hash = extract_description_type_and_content(text, process_content: true, expresion: /^(.*?)\[([^\]]*)\](.*)$/m)
-        RequestBodyExampleTag.new(tag_name, description, content: hash)
+        # Use a regex that supports multiline content with proper capture groups
+        match = text.match(/^(.*?)\s*\[([^\]]*)\]\s*(.*)$/m)
+        raise ArgumentError, "Invalid tag format: #{text}" if match.nil?
+
+        description = match[1].strip
+        type = match[2].strip
+        content = eval_content(match[3].strip)
+
+        RequestBodyExampleTag.new(tag_name, description, content: content)
       end
 
       # Parses a tag that represents a parameter.
@@ -97,9 +104,16 @@ module OasRails
       # @param text [String] The text to parse.
       # @return [Array] An array containing the name, code, and schema.
       def extract_name_code_and_hash(text)
-        name, code = extract_text_and_parentheses_content(text)
-        _, type, = extract_description_type_and_content(text)
-        hash = eval_content(type)
+        # First get the name and code part
+        name_with_code = text.split(/\s*\[/).first
+        name, code = extract_text_and_parentheses_content(name_with_code.strip)
+
+        # Then get the hash content part which can be multiline
+        # Use a non-greedy match for the bracketed type, then grab everything after it
+        type_content = text.match(/\[(.*?)\]\s*(.*)/m)
+        return [name, code, {}] unless type_content
+
+        hash = eval_content(type_content[2].strip)
         [name, code, hash]
       end
 
@@ -108,9 +122,15 @@ module OasRails
       # @return [Hash] The evaluated hash, or an empty hash if an error occurs.
       # rubocop:disable Security/Eval
       def eval_content(content)
-        eval(content)
-      rescue StandardError
-        {}
+        # Handle potential multiline content by normalizing the string
+        content = content.strip
+        begin
+          eval(content)
+        rescue StandardError => e
+          # Log the error for debugging purposes
+          Rails.logger.error("Failed to parse example content: #{e.message}") if defined?(Rails) && Rails.respond_to?(:logger)
+          {}
+        end
       end
       # rubocop:enable Security/Eval
 
