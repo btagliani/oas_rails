@@ -93,6 +93,34 @@ module OasRails
           obj.reject { |key, _| OasRails.config.send("excluded_columns_#{@context}").include?(key.to_sym) }
         end
       end
+
+      def to_spec
+        hash = {}
+
+        # Handle schema
+        hash[:schema] = schema.respond_to?(:to_spec) ? schema.to_spec : schema unless schema.nil? || (schema.respond_to?(:empty?) && schema.empty?)
+
+        # Handle examples - this is key for our issue
+        unless examples.nil? || examples.empty?
+          examples_hash = {}
+          examples.each do |key, example|
+            examples_hash[key] = if example.respond_to?(:to_spec)
+                                   example.to_spec
+                                 else
+                                   example
+                                 end
+          end
+          hash[:examples] = examples_hash
+        end
+
+        # Handle example
+        hash[:example] = example unless example.nil? || (example.respond_to?(:empty?) && example.empty?)
+
+        # Handle encoding
+        hash[:encoding] = encoding unless encoding.nil? || (encoding.respond_to?(:empty?) && encoding.empty?)
+
+        hash
+      end
     end
   end
 end
