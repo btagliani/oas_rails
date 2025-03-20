@@ -18,6 +18,20 @@ module OasRails
         # Check if text is valid for parsing
         return RequestBodyExampleTag.new(tag_name, "Default request", content: {}) if text.nil? || text.strip.empty?
 
+        # If the format indicates a multiline example
+        # (has opening brace but missing or unbalanced closing brace)
+        if text.include?('{') && (text.count('{') != text.count('}') || !text.include?('}'))
+          description = text.split(/\s*\[/).first&.strip || "Request"
+
+          # Try to find multiline content in docstring or source files
+          content = extract_multiline_content_from_current_context(description)
+
+          if content && !content.empty?
+            Rails.logger.info("Successfully extracted multiline content for '#{description}'") if defined?(Rails) && Rails.respond_to?(:logger)
+            return RequestBodyExampleTag.new(tag_name, description, content: content)
+          end
+        end
+
         # Try to extract using the regex
         begin
           # Use a regex that supports multiline content with proper capture groups
@@ -26,6 +40,12 @@ module OasRails
           if match.nil?
             # If regex fails, try a simpler approach
             description = text.split(/\s*\[/).first&.strip || "Request"
+
+            # One more attempt to find multiline content
+            content = extract_multiline_content_from_current_context(description)
+            return RequestBodyExampleTag.new(tag_name, description, content: content) if content && !content.empty?
+
+            Rails.logger.info("Could not parse request body example for '#{description}'") if defined?(Rails) && Rails.respond_to?(:logger)
             return RequestBodyExampleTag.new(tag_name, description, content: {})
           end
 
@@ -34,7 +54,13 @@ module OasRails
           content_text = match[3]
 
           # Check if content is just an opening brace (multiline content)
-          if content_text.strip == '{' || content_text.strip == '{ '
+          if content_text.strip == '{' || content_text.strip == '{ ' ||
+             (content_text.include?('{') && content_text.count('{') != content_text.count('}'))
+            # Try to find multiline content in docstring
+            content = extract_multiline_content_from_current_context(description)
+
+            return RequestBodyExampleTag.new(tag_name, description, content: content) if content && !content.empty?
+
             Rails.logger.info("Request body example for '#{description}' appears to have multiline content that couldn't be fully parsed") if defined?(Rails) && Rails.respond_to?(:logger)
             return RequestBodyExampleTag.new(tag_name, description, content: {})
           end
@@ -48,6 +74,13 @@ module OasRails
           else
             puts "Failed to parse request body example tag: #{e.message}\nText: #{text}"
           end
+
+          # One last attempt - try to extract the description and look for it in source files
+          description = text.split(/\s*\[/).first&.strip || "Request"
+          content = extract_multiline_content_from_current_context(description)
+
+          return RequestBodyExampleTag.new(tag_name, description, content: content) if content && !content.empty?
+
           RequestBodyExampleTag.new(tag_name, "Default request", content: {})
         end
       end
@@ -78,6 +111,27 @@ module OasRails
         # Check if text is valid for parsing
         return ResponseExampleTag.new(tag_name, "Default response", content: {}, code: "200") if text.nil? || text.strip.empty?
 
+        # If the format indicates a multiline example
+        # (has opening brace but missing or unbalanced closing brace)
+        if text.include?('{') && (text.count('{') != text.count('}') || !text.include?('}'))
+          description = text.split(/\s*\[/).first&.strip || "Response"
+
+          # Extract code if present
+          code = "200"
+          if description =~ /\((\d+)\)/
+            code = ::Regexp.last_match(1)
+            description = description.sub(/\s*\(\d+\)/, '')
+          end
+
+          # Try to find multiline content in docstring or source files
+          content = extract_multiline_content_from_current_context(description, "@response_example")
+
+          if content && !content.empty?
+            Rails.logger.info("Successfully extracted multiline content for response '#{description}'") if defined?(Rails) && Rails.respond_to?(:logger)
+            return ResponseExampleTag.new(tag_name, description, content: content, code: code)
+          end
+        end
+
         # Try to extract name, code, and hash using the helper method
         begin
           description, code, hash = extract_name_code_and_hash(text)
@@ -85,6 +139,18 @@ module OasRails
           # Make sure we have all necessary values
           description = "Response" if description.nil? || description.strip.empty?
           code = "200" if code.nil? || code.strip.empty?
+
+          # If we couldn't extract any content and it seems to be multiline
+          if hash.empty? && text.include?('{') &&
+             (text.count('{') != text.count('}') || !text.include?('}'))
+            # Try to extract multiline content
+            multiline_hash = extract_multiline_content_from_current_context(description, "@response_example")
+            if multiline_hash && !multiline_hash.empty?
+              hash = multiline_hash
+              Rails.logger.info("Found multiline response example for '#{description}'") if defined?(Rails) && Rails.respond_to?(:logger)
+            end
+          end
+
           hash = {} if hash.nil?
 
           ResponseExampleTag.new(tag_name, description, content: hash, code:)
@@ -95,6 +161,19 @@ module OasRails
           else
             puts "Failed to parse response example tag: #{e.message}\nText: #{text}"
           end
+
+          # One last attempt - try to extract the description and look for it in source files
+          description = text.split(/\s*\[/).first&.strip || "Response"
+          code = "200"
+          if description =~ /\((\d+)\)/
+            code = ::Regexp.last_match(1)
+            description = description.sub(/\s*\(\d+\)/, '')
+          end
+
+          content = extract_multiline_content_from_current_context(description, "@response_example")
+
+          return ResponseExampleTag.new(tag_name, description, content: content, code: code) if content && !content.empty?
+
           ResponseExampleTag.new(tag_name, "Default response", content: {}, code: "200")
         end
       end
@@ -182,13 +261,9 @@ module OasRails
         content_text = type_content[2]
 
         # If content is just '{' or starts with '{' but is incomplete,
-        # the content might continue on the next lines in the comment block
-        if content_text.strip == '{' || content_text.strip == '{ '
-          # In this case, we can't extract meaningful content from just this method
-          # We'll return an empty hash, but log a message suggesting to look at surrounding context
-          Rails.logger.info("Response example for '#{name}' appears to have multiline content that couldn't be fully parsed") if defined?(Rails) && Rails.respond_to?(:logger)
-          return [name, code, {}]
-        end
+        # don't log a warning here - we'll handle this in the calling method
+        # with the multiline extraction approach
+        return [name, code, {}] if content_text.strip == '{' || content_text.strip == '{ '
 
         hash = eval_content(content_text)
         [name, code, hash]
@@ -304,6 +379,204 @@ module OasRails
           klass = Object
         end
         [klass, schema, required]
+      end
+
+      # Extract multiline content from the current YARD context
+      # @param description [String] The description of the tag to find in the docstring
+      # @param tag_type [String] The type of tag to look for, defaults to "@request_body_example"
+      # @return [Hash, nil] The extracted content as a hash, or nil if not found
+      def extract_multiline_content_from_current_context(description, tag_type = "@request_body_example")
+        # First try to extract from the YARD Registry
+        if defined?(::YARD::Registry) && ::YARD::Registry.respond_to?(:current)
+          current_object = ::YARD::Registry.current
+          if current_object && current_object.docstring
+            # Find the tag in the docstring
+            content = extract_multiline_hash_from_docstring(current_object.docstring.all, description, tag_type)
+            return content if content && !content.empty?
+          end
+        end
+
+        # Then try to extract from the current docstring parser
+        if defined?(::YARD::DocstringParser) && ::YARD::DocstringParser.respond_to?(:current) && ::YARD::DocstringParser.current
+          docstring = ::YARD::DocstringParser.current.text
+          if docstring
+            content = extract_multiline_hash_from_docstring(docstring.split("\n"), description, tag_type)
+            return content if content && !content.empty?
+          end
+        end
+
+        # Finally, try to extract from the source file
+        if defined?(::YARD::Parser::SourceParser) && ::YARD::Parser::SourceParser.respond_to?(:parser)
+          parser = ::YARD::Parser::SourceParser.parser
+          if parser && parser.respond_to?(:file) && parser.file
+            begin
+              file = parser.file
+              lines = File.readlines(file)
+
+              # Find the line with our description
+              tag_line = nil
+              lines.each_with_index do |line, idx|
+                if line.include?(tag_type) && line.include?(description)
+                  tag_line = idx
+                  break
+                end
+              end
+
+              if tag_line
+                # Extract the multiline hash
+                hash = extract_multiline_hash_from_source(lines, tag_line)
+                return hash if hash && !hash.empty?
+              end
+            rescue StandardError => e
+              Rails.logger.error("Failed to extract multiline content from source: #{e.message}") if defined?(Rails) && Rails.respond_to?(:logger)
+            end
+          end
+        end
+
+        # If all failed, try one more approach - look through all controller files
+        # Very Rails specific, but that's what we're targeting
+        begin
+          if defined?(Rails) && Rails.respond_to?(:root)
+            controllers_path = File.join(Rails.root, 'app', 'controllers', '**', '*.rb')
+            api_controllers_path = File.join(Rails.root, 'app', 'controllers', 'api', '**', '*.rb')
+
+            # First search through API controllers as they're more likely to have OAS documentation
+            [api_controllers_path, controllers_path].each do |glob_pattern|
+              Dir.glob(glob_pattern).each do |controller_file|
+                next unless File.exist?(controller_file)
+
+                begin
+                  lines = File.readlines(controller_file)
+                  tag_line = nil
+
+                  # Look for exact matches first
+                  lines.each_with_index do |line, idx|
+                    if line.include?(tag_type) && line.include?(description)
+                      tag_line = idx
+                      break
+                    end
+                  end
+
+                  # If no exact match, try partial matches
+                  if tag_line.nil?
+                    lines.each_with_index do |line, idx|
+                      next unless line.include?(tag_type) && (
+                         description.include?(line.split('[').first.gsub(tag_type, '').strip) ||
+                         line.split('[').first.gsub(tag_type, '').strip.include?(description)
+                       )
+
+                      tag_line = idx
+                      break
+                    end
+                  end
+
+                  if tag_line
+                    hash = extract_multiline_hash_from_source(lines, tag_line)
+                    return hash if hash && !hash.empty?
+                  end
+                rescue StandardError => e
+                  Rails.logger.error("Error processing controller file #{controller_file}: #{e.message}") if defined?(Rails) && Rails.respond_to?(:logger)
+                end
+              end
+            end
+          end
+        rescue StandardError => e
+          Rails.logger.error("Failed in last attempt to extract multiline content: #{e.message}") if defined?(Rails) && Rails.respond_to?(:logger)
+        end
+
+        # If all failed, return empty hash
+        {}
+      end
+
+      # Extract a multiline hash from docstring lines
+      # @param lines [Array<String>] The docstring lines
+      # @param description [String] The description to search for
+      # @param tag_type [String] The type of tag to look for
+      # @return [Hash] The extracted hash, or an empty hash if extraction fails
+      def extract_multiline_hash_from_docstring(lines, description, tag_type = "@request_body_example")
+        tag_line = nil
+
+        # Find the line containing our tag
+        lines.each_with_index do |line, idx|
+          if line.include?(tag_type) && line.include?(description)
+            tag_line = idx
+            break
+          end
+        end
+
+        return {} unless tag_line
+
+        # Now extract the hash
+        extract_multiline_hash_from_source(lines, tag_line)
+      end
+
+      # Extract a multiline hash from source lines starting at the given index
+      # @param lines [Array<String>] The source lines
+      # @param start_idx [Integer] The index to start looking from
+      # @return [Hash] The extracted hash, or an empty hash if extraction fails
+      def extract_multiline_hash_from_source(lines, start_idx)
+        content_lines = []
+        brace_count = 0
+        in_hash = false
+
+        # Search up to 30 lines after the tag line
+        end_idx = [start_idx + 30, lines.length - 1].min
+
+        (start_idx..end_idx).each do |i|
+          line = lines[i].strip
+
+          # Skip empty lines
+          next if line.empty?
+
+          # Skip until we find a line with opening brace
+          unless in_hash
+            next unless line.include?('{')
+
+            in_hash = true
+            # Extract just the part from the opening brace
+            brace_idx = line.index('{')
+            line = line[brace_idx..-1]
+
+          end
+
+          # Clean up the line (remove comment markers and whitespace)
+          # This is important for YARD comments which start with #
+          clean_line = line.sub(/^\s*#\s*/, '').strip
+
+          # Skip empty lines after cleanup
+          next if clean_line.empty?
+
+          content_lines << clean_line
+
+          # Count braces to properly detect the end of the hash
+          brace_count += clean_line.count('{')
+          brace_count -= clean_line.count('}')
+
+          # If braces are balanced, we found the complete hash
+          break if brace_count == 0 && clean_line.include?('}')
+        end
+
+        # If we didn't find a complete hash, log and return empty
+        if brace_count != 0
+          Rails.logger.error("Unbalanced braces in multiline content extraction") if defined?(Rails) && Rails.respond_to?(:logger)
+          return {}
+        end
+
+        # Join the content lines with spaces
+        content_text = content_lines.join(' ')
+
+        # Extract the hash from the combined text
+        if match = content_text.match(/(\{.*\})/m)
+          hash_text = match[1]
+          begin
+            result = eval(hash_text)
+            return result.is_a?(Hash) ? result : {}
+          rescue StandardError => e
+            Rails.logger.error("Failed to evaluate hash from multiline content: #{e.message}") if defined?(Rails) && Rails.respond_to?(:logger)
+          end
+        end
+
+        {}
       end
     end
   end
