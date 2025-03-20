@@ -15,15 +15,41 @@ module OasRails
       # @param text [String] The tag text to parse.
       # @return [RequestBodyExampleTag] The parsed request body example tag object.
       def parse_tag_with_request_body_example(tag_name, text)
-        # Use a regex that supports multiline content with proper capture groups
-        match = text.match(/^(.*?)\s*\[([^\]]*)\]\s*(.*)$/m)
-        raise ArgumentError, "Invalid tag format: #{text}" if match.nil?
+        # Check if text is valid for parsing
+        return RequestBodyExampleTag.new(tag_name, "Default request", content: {}) if text.nil? || text.strip.empty?
 
-        description = match[1].strip
-        type = match[2].strip
-        content = eval_content(match[3].strip)
+        # Try to extract using the regex
+        begin
+          # Use a regex that supports multiline content with proper capture groups
+          match = text.match(/^(.*?)\s*\[([^\]]*)\]\s*(.*)$/m)
 
-        RequestBodyExampleTag.new(tag_name, description, content: content)
+          if match.nil?
+            # If regex fails, try a simpler approach
+            description = text.split(/\s*\[/).first&.strip || "Request"
+            return RequestBodyExampleTag.new(tag_name, description, content: {})
+          end
+
+          description = match[1].strip
+          type = match[2].strip
+          content_text = match[3]
+
+          # Check if content is just an opening brace (multiline content)
+          if content_text.strip == '{' || content_text.strip == '{ '
+            Rails.logger.info("Request body example for '#{description}' appears to have multiline content that couldn't be fully parsed") if defined?(Rails) && Rails.respond_to?(:logger)
+            return RequestBodyExampleTag.new(tag_name, description, content: {})
+          end
+
+          content = eval_content(content_text)
+          RequestBodyExampleTag.new(tag_name, description, content: content)
+        rescue StandardError => e
+          # In case of parsing error, return a default request body example tag
+          if defined?(Rails) && Rails.respond_to?(:logger)
+            Rails.logger.error("Failed to parse request body example tag: #{e.message}\nText: #{text}")
+          else
+            puts "Failed to parse request body example tag: #{e.message}\nText: #{text}"
+          end
+          RequestBodyExampleTag.new(tag_name, "Default request", content: {})
+        end
       end
 
       # Parses a tag that represents a parameter.
@@ -49,8 +75,28 @@ module OasRails
       # @param text [String] The tag text to parse.
       # @return [ResponseExampleTag] The parsed response example tag object.
       def parse_tag_with_response_example(tag_name, text)
-        description, code, hash = extract_name_code_and_hash(text)
-        ResponseExampleTag.new(tag_name, description, content: hash, code:)
+        # Check if text is valid for parsing
+        return ResponseExampleTag.new(tag_name, "Default response", content: {}, code: "200") if text.nil? || text.strip.empty?
+
+        # Try to extract name, code, and hash using the helper method
+        begin
+          description, code, hash = extract_name_code_and_hash(text)
+
+          # Make sure we have all necessary values
+          description = "Response" if description.nil? || description.strip.empty?
+          code = "200" if code.nil? || code.strip.empty?
+          hash = {} if hash.nil?
+
+          ResponseExampleTag.new(tag_name, description, content: hash, code:)
+        rescue StandardError => e
+          # In case of parsing error, return a default response example tag
+          if defined?(Rails) && Rails.respond_to?(:logger)
+            Rails.logger.error("Failed to parse response example tag: #{e.message}\nText: #{text}")
+          else
+            puts "Failed to parse response example tag: #{e.message}\nText: #{text}"
+          end
+          ResponseExampleTag.new(tag_name, "Default response", content: {}, code: "200")
+        end
       end
 
       private
@@ -102,18 +148,49 @@ module OasRails
 
       # Specific method to extract name, code, and hash for responses examples.
       # @param text [String] The text to parse.
-      # @return [Array] An array containing the name, code, and schema.
+      # @return [Array] An array containing the name, code, and hash.
       def extract_name_code_and_hash(text)
         # First get the name and code part
         name_with_code = text.split(/\s*\[/).first
-        name, code = extract_text_and_parentheses_content(name_with_code.strip)
+        name, code = extract_text_and_parentheses_content(name_with_code&.strip)
+
+        # Handle case where name and code extraction fails
+        if name.nil? || code.nil?
+          # Try to extract just the name without parentheses
+          name = name_with_code&.strip
+          code = "200" # Default to 200 if code can't be extracted
+        end
 
         # Then get the hash content part which can be multiline
-        # Use a non-greedy match for the bracketed type, then grab everything after it
+        # This regex matches anything in square brackets and grabs the content
+        bracket_match = text.match(/\[(.*)\]/m)
+        return [name, code, {}] unless bracket_match
+
+        bracket_content = bracket_match[1].strip
+
+        # Check if the content is a Ruby hash directly inside the brackets
+        if bracket_content.start_with?('{') && bracket_content.end_with?('}')
+          hash = eval_content(bracket_content)
+          return [name, code, hash]
+        end
+
+        # Otherwise, try the standard approach with content after the bracket
         type_content = text.match(/\[(.*?)\]\s*(.*)/m)
         return [name, code, {}] unless type_content
 
-        hash = eval_content(type_content[2].strip)
+        # Extract the content after the closing bracket
+        content_text = type_content[2]
+
+        # If content is just '{' or starts with '{' but is incomplete,
+        # the content might continue on the next lines in the comment block
+        if content_text.strip == '{' || content_text.strip == '{ '
+          # In this case, we can't extract meaningful content from just this method
+          # We'll return an empty hash, but log a message suggesting to look at surrounding context
+          Rails.logger.info("Response example for '#{name}' appears to have multiline content that couldn't be fully parsed") if defined?(Rails) && Rails.respond_to?(:logger)
+          return [name, code, {}]
+        end
+
+        hash = eval_content(content_text)
         [name, code, hash]
       end
 
@@ -122,13 +199,50 @@ module OasRails
       # @return [Hash] The evaluated hash, or an empty hash if an error occurs.
       # rubocop:disable Security/Eval
       def eval_content(content)
+        # Handle nil or empty content
+        return {} if content.nil? || content.strip.empty?
+
         # Handle potential multiline content by normalizing the string
         content = content.strip
+
+        # Special case: if content is just '{' or '{ ' (often happens with multiline YARD comments)
+        return {} if ['{', '{ '].include?(content)
+
+        # Fix for multiline content
+        # If content contains newlines, we need to ensure it's a valid Ruby hash
+        if content.include?("\n")
+          # Remove all leading '#' characters that might be from YARD comments
+          content = content.lines.map do |line|
+            line.sub(/^\s*#\s*/, '').rstrip
+          end.join(' ').strip
+        end
+
+        # Make sure braces are balanced
+        open_count = content.count('{')
+        close_count = content.count('}')
+
+        # If braces aren't balanced, try to fix or return empty hash
+        if open_count != close_count
+          return {} unless open_count > close_count
+
+          # Add missing closing braces
+          content += '}' * (open_count - close_count)
+
+          # Unbalanced in the other direction - can't properly fix this
+
+        end
+
         begin
-          eval(content)
+          result = eval(content)
+          # Make sure we return a hash
+          result.is_a?(Hash) ? result : {}
         rescue StandardError => e
           # Log the error for debugging purposes
-          Rails.logger.error("Failed to parse example content: #{e.message}") if defined?(Rails) && Rails.respond_to?(:logger)
+          if defined?(Rails) && Rails.respond_to?(:logger)
+            Rails.logger.error("Failed to parse example content: #{e.message}\nContent: #{content}")
+          else
+            puts "Failed to parse example content: #{e.message}\nContent: #{content}"
+          end
           {}
         end
       end
