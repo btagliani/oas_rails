@@ -23,6 +23,15 @@ module OasRails
         # Don't process if there are no tags
         return self if tags.nil? || tags.empty?
 
+        # Debug the incoming tags
+        if defined?(Rails)
+          Rails.logger.debug "DEBUGGING: ContentBuilder#with_examples_from_tags"
+          Rails.logger.debug "Tags count: #{tags.size}"
+          tags.each_with_index do |tag, idx|
+            Rails.logger.debug "Tag #{idx}: text=#{tag.text}, content=#{tag.content.inspect}"
+          end
+        end
+
         # Create the examples hash based on the tags
         example_hash = tags.each_with_object({}) do |example, result|
           # Generate a key from the example text
@@ -38,15 +47,22 @@ module OasRails
           result[key] = value
         end
 
+        # Debug the created example hash
+        Rails.logger.debug "Created example_hash: #{example_hash.inspect}" if defined?(Rails)
+
         # If we have examples, add them to the media type
         unless example_hash.empty?
           # Add the examples to the components
           examples_refs = example_hash.transform_values do |example|
-            @specification.components.add_example(example)
+            ref = @specification.components.add_example(example)
+            Rails.logger.debug "Added example #{example['summary']} to components, got ref: #{ref.inspect}" if defined?(Rails)
+            ref
           end
 
           # Merge with any existing examples
           @media_type.examples = @media_type.examples.merge(examples_refs)
+
+          Rails.logger.debug "Final @media_type.examples: #{@media_type.examples.inspect}" if defined?(Rails)
         end
 
         self

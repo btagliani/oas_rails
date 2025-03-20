@@ -62,6 +62,12 @@ module OasRails
       end
 
       def add_example(example)
+        # Debug the incoming example
+        if defined?(Rails)
+          Rails.logger.debug "DEBUGGING: Components#add_example"
+          Rails.logger.debug "Example: #{example.inspect}"
+        end
+
         # If the example is nil or empty, return a blank reference
         return example_reference("empty_example") if example.nil? || (example.is_a?(Hash) && example.empty?)
 
@@ -75,14 +81,28 @@ module OasRails
           key = Hashable.generate_hash(example)
         end
 
+        if defined?(Rails)
+          Rails.logger.debug "Generated key: #{key}"
+          Rails.logger.debug "Examples already has key? #{@examples.key?(key)}"
+        end
+
         # Add an empty example if needed
         @examples["empty_example"] ||= { "summary" => "Empty Example", "value" => {} }
 
         # Only add the example if it doesn't exist yet
         @examples[key] = example if @examples[key].nil?
 
+        # Get a reference to the example
+        ref = example_reference(key)
+
+        if defined?(Rails)
+          Rails.logger.debug "Created reference: #{ref.inspect}"
+          Rails.logger.debug "Current examples count: #{@examples.keys.size}"
+          Rails.logger.debug "Examples keys: #{@examples.keys.join(', ')}"
+        end
+
         # Return a reference to the example
-        example_reference(key)
+        ref
       end
 
       def create_reference(type, name)

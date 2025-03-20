@@ -41,6 +41,17 @@ module OasRails
 
         hash
       end
+
+      def hash_representation
+        hash_rep = public_instance_variables.sort.to_h { |var| [var, instance_variable_get(var)] }
+
+        if defined?(Rails)
+          Rails.logger.debug "DEBUGGING: RequestBody#hash_representation"
+          Rails.logger.debug "Hash representation: #{hash_rep.inspect}"
+        end
+
+        hash_rep
+      end
     end
   end
 end

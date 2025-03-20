@@ -18,12 +18,28 @@ module OasRails
       end
 
       def from_tags(tag:, examples_tags: [])
+        if defined?(Rails)
+          Rails.logger.debug "DEBUGGING: RequestBodyBuilder#from_tags"
+          Rails.logger.debug "Tag: #{tag.inspect}"
+          Rails.logger.debug "Examples tags count: #{examples_tags.size}"
+          examples_tags.each_with_index do |ex_tag, idx|
+            Rails.logger.debug "Example tag #{idx}: text=#{ex_tag.text}, content=#{ex_tag.content.inspect}"
+          end
+        end
+
         if tag.klass.ancestors.map(&:to_s).include? 'ActiveRecord::Base'
           from_model_class(klass: tag.klass, description: tag.text, required: tag.required, examples_tags:)
         else
           @request_body.description = tag.text
-          @request_body.content = ContentBuilder.new(@specification, :incoming).with_schema(tag.schema).with_examples_from_tags(examples_tags).build
+
+          # Build content with examples
+          content_builder = ContentBuilder.new(@specification, :incoming)
+          content_builder.with_schema(tag.schema)
+          content_builder.with_examples_from_tags(examples_tags)
+          @request_body.content = content_builder.build
           @request_body.required = tag.required
+
+          Rails.logger.debug "RequestBody content after build: #{@request_body.content.inspect}" if defined?(Rails)
         end
 
         self
@@ -44,9 +60,20 @@ module OasRails
       end
 
       def reference
+        if defined?(Rails)
+          Rails.logger.debug "DEBUGGING: RequestBodyBuilder#reference"
+          Rails.logger.debug "Content empty? #{@request_body.content == {}}"
+          Rails.logger.debug "RequestBody: #{@request_body.inspect}"
+          Rails.logger.debug "RequestBody content: #{@request_body.content.inspect}"
+        end
+
         return {} if @request_body.content == {}
 
-        @specification.components.add_request_body(@request_body)
+        ref = @specification.components.add_request_body(@request_body)
+
+        Rails.logger.debug "Reference returned: #{ref.inspect}" if defined?(Rails)
+
+        ref
       end
 
       private

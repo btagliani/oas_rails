@@ -102,15 +102,19 @@ module OasRails
 
         # Handle examples - this is key for our issue
         unless examples.nil? || examples.empty?
-          examples_hash = {}
-          examples.each do |key, example|
-            examples_hash[key] = if example.respond_to?(:to_spec)
-                                   example.to_spec
-                                 else
-                                   example
-                                 end
+          if examples.is_a?(Reference)
+            hash[:examples] = examples.to_spec
+          else
+            examples_hash = {}
+            examples.each do |key, example|
+              examples_hash[key] = if example.respond_to?(:to_spec)
+                                     example.to_spec
+                                   else
+                                     example
+                                   end
+            end
+            hash[:examples] = examples_hash
           end
-          hash[:examples] = examples_hash
         end
 
         # Handle example

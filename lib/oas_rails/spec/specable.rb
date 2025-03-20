@@ -13,6 +13,11 @@ module OasRails
           camel_case_key = key.camelize(:lower).to_sym
           value = send(var)
 
+          if defined?(Rails) && key == "examples"
+            Rails.logger.debug "DEBUGGING: Specable#to_spec for examples"
+            Rails.logger.debug "Examples value: #{value.inspect}"
+          end
+
           processed_value = if value.respond_to?(:to_spec)
                               value.to_spec
                             elsif value.is_a?(Array) && value.all? { |elem| elem.respond_to?(:to_spec) }
@@ -27,8 +32,16 @@ module OasRails
                               value
                             end
 
+          if defined?(Rails) && key == "examples"
+            Rails.logger.debug "Processed examples value: #{processed_value.inspect}"
+            Rails.logger.debug "Valid? #{!valid_processed_value?(processed_value)}"
+          end
+
           hash[camel_case_key] = processed_value unless valid_processed_value?(processed_value)
         end
+
+        Rails.logger.debug "Final hash examples: #{hash[:examples].inspect}" if defined?(Rails) && hash.key?(:examples)
+
         hash
       end
 
@@ -41,6 +54,10 @@ module OasRails
       private
 
       def valid_processed_value?(processed_value)
+        # Reference objects are never considered empty/invalid
+        return false if defined?(OasRails::Spec::Reference) && processed_value.is_a?(OasRails::Spec::Reference)
+
+        # For other objects, apply the standard checks
         ((processed_value.is_a?(Hash) || processed_value.is_a?(Array)) && processed_value.empty?) || processed_value.nil?
       end
 
